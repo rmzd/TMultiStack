@@ -4,6 +4,7 @@
 #include <stdexcept>
 #include <vector>
 #include <fstream>
+#include <algorithm>
 
 template <class T>
 class TStack
@@ -300,4 +301,347 @@ void TStack<T>::LoadFromFile(const std::string& filename) {
         len = top = 0;
         isNew = true;
     }
+}
+
+template <class T>
+class TMultiStack
+{
+private:
+    size_t len;
+    size_t stackCount;
+    T** data;
+    TStack<T>* stacks;
+
+public:
+    TMultiStack();
+    TMultiStack(size_t totalSize, size_t numStacks);
+    TMultiStack(const TMultiStack& other);
+    TMultiStack(TMultiStack&& other);
+    ~TMultiStack();
+
+    void Push(size_t stackIndex, const T& value);
+    T Pop(size_t stackIndex);
+    bool IsEmpty(size_t stackIndex) const;
+    bool IsFull(size_t stackIndex) const;
+    void Repack(int curStack);
+
+    TMultiStack& operator=(const TMultiStack& other);
+    TMultiStack& operator=(TMultiStack&& other);
+    bool operator==(const TMultiStack& other) const;
+    bool operator!=(const TMultiStack& other) const;
+    TStack<T>& operator[](size_t stackIndex);
+    const TStack<T>& operator[](size_t stackIndex) const;
+
+    template <class U>
+    friend std::ostream& operator<<(std::ostream& os, const TMultiStack<U>& multiStack);
+
+    template <class U>
+    friend std::istream& operator>>(std::istream& is, TMultiStack<U>& multiStack);
+
+    size_t GetLen();
+    size_t GetStackCount();
+    T** GetData();
+    TStack<T>* GetStacks();
+
+    void InitializeStacks();
+    size_t GetStackStart(size_t stackIndex);
+    void UpdateStackPointers(size_t stackIndex, size_t newStart, size_t newCapacity);
+};
+
+template <class T>
+TMultiStack<T>::TMultiStack() : len(0), stackCount(0), data(nullptr), stacks(nullptr) {}
+
+template <class T>
+TMultiStack<T>::TMultiStack(size_t totalSize, size_t numStacks)
+{
+    if (numStacks <= 0) throw std::invalid_argument("numStacks <= 0");
+
+    len = totalSize;
+    stackCount = numStacks;
+
+    data = new T * [len];
+    for (size_t i = 0; i < len; i++)
+        data[i] = nullptr;
+
+    stacks = new TStack<T>[stackCount];
+    InitializeStacks();
+}
+
+template <class T>
+TMultiStack<T>::TMultiStack(const TMultiStack& other)
+{
+    len = other.len;
+    stackCount = other.stackCount;
+
+    if (other.data && len > 0) {
+        data = new T * [len];
+        for (size_t i = 0; i < len; i++) {
+            if (other.data[i])
+                data[i] = new T(*other.data[i]);
+            else
+                data[i] = nullptr;
+        }
+    }
+    else {
+        data = nullptr;
+    }
+
+    if (other.stacks && stackCount > 0) {
+        stacks = new TStack<T>[stackCount];
+        for (size_t i = 0; i < stackCount; i++) {
+            stacks[i] = other.stacks[i];
+        }
+    }
+    else {
+        stacks = nullptr;
+    }
+}
+
+template <class T>
+TMultiStack<T>::TMultiStack(TMultiStack&& other)
+    : len(other.len), stackCount(other.stackCount), data(other.data), stacks(other.stacks)
+{
+    other.len = 0;
+    other.stackCount = 0;
+    other.data = nullptr;
+    other.stacks = nullptr;
+}
+
+template <class T>
+TMultiStack<T>::~TMultiStack()
+{
+    if (data) {
+        for (size_t i = 0; i < len; i++)
+            delete data[i];
+        delete[] data;
+    }
+    delete[] stacks;
+}
+
+template <class T>
+void TMultiStack<T>::Push(size_t stackIndex, const T& value)
+{
+    if (stackIndex >= stackCount) throw std::out_of_range("stackIndex >= stackCount");
+    if (stacks[stackIndex].IsFull()) Repack(stackIndex);
+    stacks[stackIndex].Push(value);
+}
+
+template <class T>
+T TMultiStack<T>::Pop(size_t stackIndex)
+{
+    if (stackIndex >= stackCount) throw std::out_of_range("stackIndex >= stackCount");
+    if (stacks[stackIndex].IsEmpty()) throw std::logic_error("stack is empty");
+    return stacks[stackIndex].Pop();
+}
+
+template <class T>
+bool TMultiStack<T>::IsEmpty(size_t stackIndex) const
+{
+    if (stackIndex >= stackCount) throw std::out_of_range("stackIndex >= stackCount");
+    return stacks[stackIndex].IsEmpty();
+}
+
+template <class T>
+bool TMultiStack<T>::IsFull(size_t stackIndex) const
+{
+    if (stackIndex >= stackCount) throw std::out_of_range("stackIndex >= stackCount");
+    return stacks[stackIndex].IsFull();
+}
+
+template <class T>
+void TMultiStack<T>::Repack(int curStack)
+{
+    size_t* stackSizes = new size_t[stackCount];
+    size_t* stackStarts = new size_t[stackCount];
+
+    size_t totalUsed = 0;
+    for (size_t i = 0; i < stackCount; i++) {
+        stackSizes[i] = stacks[i].GetCount();
+        totalUsed += stackSizes[i];
+    }
+
+    size_t freeSpace = len - totalUsed;
+    size_t baseFree = freeSpace / stackCount;
+    size_t extraFree = freeSpace % stackCount;
+
+    stackStarts[0] = 0;
+    for (size_t i = 0; i < stackCount; i++) {
+        size_t newSize = stackSizes[i] + baseFree + (i == static_cast<size_t>(curStack) ? extraFree : 0);
+        if (i > 0) {
+            stackStarts[i] = stackStarts[i - 1] + stackSizes[i - 1] + baseFree +
+                ((i - 1) == static_cast<size_t>(curStack) ? extraFree : 0);
+        }
+
+        UpdateStackPointers(i, stackStarts[i], newSize);
+    }
+
+    delete[] stackSizes;
+    delete[] stackStarts;
+}
+
+template <class T>
+TMultiStack<T>& TMultiStack<T>::operator=(const TMultiStack& other)
+{
+    if (this == &other) return *this;
+
+    if (data) {
+        for (size_t i = 0; i < len; i++) delete data[i];
+        delete[] data;
+    }
+    delete[] stacks;
+
+    len = other.len;
+    stackCount = other.stackCount;
+
+    if (other.data && len > 0) {
+        data = new T * [len];
+        for (size_t i = 0; i < len; i++) {
+            if (other.data[i])
+                data[i] = new T(*other.data[i]);
+            else
+                data[i] = nullptr;
+        }
+    }
+    else {
+        data = nullptr;
+    }
+
+    if (other.stacks && stackCount > 0) {
+        stacks = new TStack<T>[stackCount];
+        for (size_t i = 0; i < stackCount; i++) {
+            stacks[i] = other.stacks[i];
+        }
+    }
+    else {
+        stacks = nullptr;
+    }
+
+    return *this;
+}
+
+template <class T>
+TMultiStack<T>& TMultiStack<T>::operator=(TMultiStack&& other)
+{
+    if (this == &other) return *this;
+
+    if (data) {
+        for (size_t i = 0; i < len; i++) delete data[i];
+        delete[] data;
+    }
+    delete[] stacks;
+
+    len = other.len;
+    stackCount = other.stackCount;
+    data = other.data;
+    stacks = other.stacks;
+
+    other.len = 0;
+    other.stackCount = 0;
+    other.data = nullptr;
+    other.stacks = nullptr;
+
+    return *this;
+}
+
+template <class T>
+bool TMultiStack<T>::operator==(const TMultiStack& other) const
+{
+    if (len != other.len || stackCount != other.stackCount) return false;
+
+    for (size_t i = 0; i < stackCount; i++) {
+        if (stacks[i] != other.stacks[i]) return false;
+    }
+
+    return true;
+}
+
+template <class T>
+bool TMultiStack<T>::operator!=(const TMultiStack& other) const
+{
+    return !(*this == other);
+}
+
+template <class T>
+TStack<T>& TMultiStack<T>::operator[](size_t stackIndex)
+{
+    if (stackIndex >= stackCount) throw std::out_of_range("stackIndex >= stackCount");
+    return stacks[stackIndex];
+}
+
+template <class T>
+const TStack<T>& TMultiStack<T>::operator[](size_t stackIndex) const
+{
+    if (stackIndex >= stackCount) throw std::out_of_range("stackIndex >= stackCount");
+    return stacks[stackIndex];
+}
+
+template <class T>
+size_t TMultiStack<T>::GetLen() { return len; }
+
+template <class T>
+size_t TMultiStack<T>::GetStackCount() { return stackCount; }
+
+template <class T>
+T** TMultiStack<T>::GetData() { return data; }
+
+template <class T>
+TStack<T>* TMultiStack<T>::GetStacks() { return stacks; }
+
+template <class T>
+void TMultiStack<T>::InitializeStacks()
+{
+    size_t baseSize = len / stackCount;
+    size_t remainder = len % stackCount;
+
+    size_t currentStart = 0;
+    for (size_t i = 0; i < stackCount; i++) {
+        size_t stackSize = baseSize + (i < remainder ? 1 : 0);
+        stacks[i].SetData(data + currentStart, stackSize);
+        currentStart += stackSize;
+    }
+}
+
+template <class T>
+size_t TMultiStack<T>::GetStackStart(size_t stackIndex)
+{
+    if (stackIndex >= stackCount) throw std::out_of_range("stackIndex >= stackCount");
+
+    size_t start = 0;
+    for (size_t i = 0; i < stackIndex; i++) {
+        start += stacks[i].GetLen();
+    }
+    return start;
+}
+
+template <class T>
+void TMultiStack<T>::UpdateStackPointers(size_t stackIndex, size_t newStart, size_t newCapacity)
+{
+    if (stackIndex >= stackCount) throw std::out_of_range("stackIndex >= stackCount");
+    if (newStart + newCapacity > len) throw std::invalid_argument("newStart + newCapacity > len");
+
+    stacks[stackIndex].SetData(data + newStart, newCapacity);
+}
+
+template <class U>
+std::ostream& operator<<(std::ostream& os, const TMultiStack<U>& multiStack)
+{
+    os << "TMultiStack[len=" << multiStack.len << ", stackCount=" << multiStack.stackCount << "]\n";
+    for (size_t i = 0; i < multiStack.stackCount; i++) {
+        os << "Stack " << i << ": " << multiStack.stacks[i];
+    }
+    return os;
+}
+
+template <class U>
+std::istream& operator>>(std::istream& is, TMultiStack<U>& multiStack)
+{
+    size_t newLen, newStackCount;
+    is >> newLen >> newStackCount;
+
+    if (!is.good()) return is;
+
+    TMultiStack<U> temp(newLen, newStackCount);
+    multiStack = std::move(temp);
+
+    return is;
 }
